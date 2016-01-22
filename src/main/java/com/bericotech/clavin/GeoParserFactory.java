@@ -55,6 +55,18 @@ public class GeoParserFactory {
     }
 
     /**
+     * Get the default GeoParser, with maxHitDepth and maxContentWindow
+     * both set to 1, and fuzzy matching turned off.
+     *
+     * @param pathToLuceneIndex     Path to the local Lucene index.
+     * @return                      GeoParser
+     * @throws ClavinException      If the index cannot be created.
+     */
+    public static GeoParser getDefaultWithBias(String pathToLuceneIndex) throws ClavinException {
+        return getDefault(pathToLuceneIndex, 10, 1, false);
+    }
+
+    /**
      * Get a GeoParser with fuzzy matching explicitly turned on or off.
      *
      * @param pathToLuceneIndex     Path to the local Lucene index.

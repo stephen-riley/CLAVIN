@@ -233,4 +233,7 @@ public class LazyAncestryGeoName implements GeoName {
     public int hashCode() {
         return geoName.hashCode();
     }
+
+    @Override
+    public String toString() { return geoName.toString(); }
 }

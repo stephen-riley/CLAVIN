@@ -5,6 +5,8 @@ import static com.bericotech.clavin.util.DamerauLevenshtein.damerauLevenshteinDi
 import com.bericotech.clavin.extractor.LocationOccurrence;
 import com.bericotech.clavin.gazetteer.GeoName;
 
+import java.util.Comparator;
+
 /*#####################################################################
  *
  * CLAVIN (Cartographic Location And Vicinity INdexer)
@@ -56,7 +58,7 @@ public class ResolvedLocation {
     private final boolean fuzzy;
 
     // confidence score for resolution
-    private final float confidence;
+    private float confidence;
 
     /**
      * Builds a {@link ResolvedLocation} from a document retrieved from
@@ -152,4 +154,16 @@ public class ResolvedLocation {
     public float getConfidence() {
         return confidence;
     }
+
+    public void setConfidence( float confidence ) {
+        this.confidence = confidence;
+    }
+
+    public static Comparator<ResolvedLocation> ConfidenceComparator = new Comparator<ResolvedLocation>() {
+
+        public int compare(ResolvedLocation s1, ResolvedLocation s2) {
+            // sort by confidence, descending
+            return Double.compare(s2.getConfidence(), s1.getConfidence());
+        }
+    };
 }

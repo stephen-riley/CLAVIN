@@ -36,16 +36,12 @@ import com.bericotech.clavin.gazetteer.query.FuzzyMode;
 import com.bericotech.clavin.gazetteer.query.Gazetteer;
 import com.bericotech.clavin.gazetteer.query.QueryBuilder;
 import com.bericotech.clavin.util.ListUtils;
+import com.sun.tools.javac.comp.Resolve;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.EnumSet;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * Resolves location names into GeoName objects.
@@ -114,7 +110,27 @@ public class ClavinLocationResolver {
      **/
     public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final boolean fuzzy)
             throws ClavinException {
-        return resolveLocations(locations, DEFAULT_MAX_HIT_DEPTH, DEFAULT_MAX_CONTEXT_WINDOW, fuzzy, DEFAULT_ANCESTRY_MODE);
+        return resolveLocations(locations, DEFAULT_MAX_HIT_DEPTH, DEFAULT_MAX_CONTEXT_WINDOW, fuzzy, DEFAULT_ANCESTRY_MODE, false, 0.0, 0.0);
+    }
+
+    /**
+     * Resolves the supplied list of location names into
+     * {@link ResolvedLocation}s containing {@link com.bericotech.clavin.gazetteer.GeoName} objects
+     * using the defaults for maxHitDepth and maxContentWindow.
+     *
+     * Calls {@link Gazetteer#getClosestLocations} on
+     * each location name to find all possible matches, then uses
+     * heuristics to select the best match for each by calling
+     * {@link ClavinLocationResolver#pickBestCandidates}.
+     *
+     * @param locations          list of location names to be resolved
+     * @param fuzzy              switch for turning on/off fuzzy matching
+     * @return                   list of {@link ResolvedLocation} objects
+     * @throws ClavinException   if an error occurs parsing the search terms
+     **/
+    public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final boolean fuzzy, final AncestryMode ancestryMode )
+            throws ClavinException {
+        return resolveLocations(locations, DEFAULT_MAX_HIT_DEPTH, DEFAULT_MAX_CONTEXT_WINDOW, fuzzy, ancestryMode, false, 0.0, 0.0);
     }
 
     /**
@@ -135,8 +151,21 @@ public class ClavinLocationResolver {
      **/
     @SuppressWarnings("unchecked")
     public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final int maxHitDepth,
-           final int maxContextWindow, final boolean fuzzy) throws ClavinException {
-        return resolveLocations(locations, maxHitDepth, maxContextWindow, fuzzy, DEFAULT_ANCESTRY_MODE);
+                                                   final int maxContextWindow, final boolean fuzzy) throws ClavinException {
+        return resolveLocations(locations, maxHitDepth, maxContextWindow, fuzzy, DEFAULT_ANCESTRY_MODE, false, 0.0, 0.0);
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final int maxHitDepth,
+                                                   final int maxContextWindow, final boolean fuzzy, final AncestryMode ancestryMode) throws ClavinException {
+        return resolveLocations(locations, maxHitDepth, maxContextWindow, fuzzy, ancestryMode, false, 0.0, 0.0);
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final int maxHitDepth,
+                                                   final int maxContextWindow, final boolean fuzzy,
+                                                   final boolean locationBias, final double biasLatitude, final double biasLongitude) throws ClavinException {
+        return resolveLocations(locations, maxHitDepth, maxContextWindow, fuzzy, DEFAULT_ANCESTRY_MODE, false, 0.0, 0.0);
     }
 
     /**
@@ -158,7 +187,9 @@ public class ClavinLocationResolver {
      **/
     @SuppressWarnings("unchecked")
     public List<ResolvedLocation> resolveLocations(final List<LocationOccurrence> locations, final int maxHitDepth,
-            final int maxContextWindow, final boolean fuzzy, final AncestryMode ancestryMode) throws ClavinException {
+            final int maxContextWindow, final boolean fuzzy, final AncestryMode ancestryMode,
+            final boolean locationBias, final double biasLatitude, final double biasLongitude) throws ClavinException {
+
         // are you forgetting something? -- short-circuit if no locations were provided
         if (locations == null || locations.isEmpty()) {
             return Collections.EMPTY_LIST;
@@ -206,13 +237,22 @@ public class ClavinLocationResolver {
             // initialize return object
             List<ResolvedLocation> bestCandidates = new ArrayList<ResolvedLocation>();
 
-            // split-up allCandidates into reasonably-sized chunks to
-            // limit computational load when heuristically selecting
-            // the best matches
-            for (List<List<ResolvedLocation>> theseCandidates : ListUtils.chunkifyList(allCandidates, maxContextWindow)) {
-                // select the best match for each location name based
-                // based on heuristics
-                bestCandidates.addAll(pickBestCandidates(theseCandidates));
+            if( locationBias ) {
+                for( List<ResolvedLocation> theseCandidates : allCandidates ) {
+                    List<ResolvedLocation> results = pickBestBiasedCandidates(theseCandidates,biasLatitude, biasLongitude);
+                    if( results.size() > 0 ) {
+                        bestCandidates.add(results.get(0));
+                    }
+                }
+            } else {
+                // split-up allCandidates into reasonably-sized chunks to
+                // limit computational load when heuristically selecting
+                // the best matches
+                for (List<List<ResolvedLocation>> theseCandidates : ListUtils.chunkifyList(allCandidates, maxContextWindow)) {
+                    // select the best match for each location name based
+                    // based on heuristics
+                    bestCandidates.addAll(pickBestCandidates(theseCandidates));
+                }
             }
 
             return bestCandidates;
@@ -411,5 +451,60 @@ public class ClavinLocationResolver {
         }
 
         return demonyms.contains(extractedLocation.getText());
+    }
+
+    /**
+     * Uses heuristics to select the best match for each location name
+     * extracted from a document, choosing from among a list of lists
+     * of candidate matches.
+     *
+     * Although not guaranteeing an optimal solution (enumerating &
+     * evaluating each possible combination is too costly), it does a
+     * decent job of cracking the "Springfield Problem" by selecting
+     * candidates that would make sense to appear together based on
+     * common country and admin1 codes (i.e., states or provinces).
+     *
+     * For example, if we also see "Boston" mentioned in a document
+     * that contains "Springfield," we'd use this as a clue that we
+     * ought to choose Springfield, MA over Springfield, IL or
+     * Springfield, MO.
+     *
+     * TODO: consider lat/lon distance in addition to shared
+     *       CountryCodes and Admin1Codes.
+     *
+     * @param allCandidates list of lists of candidate matches for locations names
+     * @return              list of best matches for each location name
+     */
+    private List<ResolvedLocation> pickBestBiasedCandidates(final List<ResolvedLocation> allCandidates, final double biasLatitude, final double biasLongitude) {
+        // initialize return object
+
+
+        for( ResolvedLocation rl : allCandidates ) {
+            double term1 = 1 / allCandidates.size();
+            double term2 = distanceScore( rl.getGeoname().getLatitude(), rl.getGeoname().getLongitude(),biasLatitude,biasLongitude);
+            rl.setConfidence((float)(term1+term2));
+        }
+
+        allCandidates.sort( ResolvedLocation.ConfidenceComparator );
+        return allCandidates;
+    }
+
+    private static double distance( double lat1, double lon1, double lat2, double lon2 ) {
+        double R = 6371; // km
+        double dLat = Math.toRadians(lat2-lat1);
+        double dLon = Math.toRadians(lon2-lon1);
+        double a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                        Math.sin(dLon/2) * Math.sin(dLon/2);
+        double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        double d = R * c;
+
+        return d;
+    }
+
+    private static double distanceScore( double lat1, double lon1, double lat2, double lon2 ) {
+        double d = distance( lat1, lon1, lat2, lon2 );
+        double score = 0.3169 * Math.exp( -0.00005 * d );
+        return score;
     }
 }

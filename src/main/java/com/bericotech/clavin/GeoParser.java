@@ -109,6 +109,25 @@ public class GeoParser {
      * @throws Exception
      */
     public List<ResolvedLocation> parse(String inputText, AncestryMode ancestryMode) throws Exception {
+        return parse( inputText, ancestryMode, 0.0, 0.0);
+    }
+
+    public List<ResolvedLocation> parse(String inputText, final double biasLatitude, double biasLongitude) throws Exception {
+        return parse( inputText, ClavinLocationResolver.DEFAULT_ANCESTRY_MODE, biasLatitude, biasLongitude );
+    }
+
+    /**
+     * Takes an unstructured text document (as a String), extracts the
+     * location names contained therein, and resolves them into
+     * geographic entities representing the best match for those
+     * location names.
+     *
+     * @param inputText     unstructured text to be processed
+     * @param ancestryMode  the ancestry load mode
+     * @return              list of geo entities resolved from text
+     * @throws Exception
+     */
+    public List<ResolvedLocation> parse(String inputText, AncestryMode ancestryMode, final double biasLatitude, final double biasLongitude) throws Exception {
 
         logger.trace("input: {}", inputText);
 
@@ -120,10 +139,18 @@ public class GeoParser {
         logger.trace("extracted: {}", locationNames);
 
         long resolveStart = System.currentTimeMillis();
+
         // then, resolve the extracted location names against a
         // gazetteer to produce geographic entities representing the
         // locations mentioned in the original text
-        List<ResolvedLocation> resolvedLocations = resolver.resolveLocations(locationNames, maxHitDepth, maxContextWindow, fuzzy, ancestryMode);
+        List<ResolvedLocation> resolvedLocations;
+
+        if( biasLatitude == 0.0 && biasLongitude == 0.0 ) {
+            resolvedLocations = resolver.resolveLocations(locationNames, maxHitDepth, maxContextWindow, fuzzy, ancestryMode);
+        } else {
+            resolvedLocations = resolver.resolveLocations(locationNames, maxHitDepth, maxContextWindow, fuzzy, ancestryMode, true, biasLatitude, biasLongitude);
+        }
+
         long resolveEnd = System.currentTimeMillis();
 
         logger.trace("resolved: {}", resolvedLocations);

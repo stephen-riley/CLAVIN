@@ -1,13 +1,16 @@
 package com.bericotech.clavin;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-
-import com.bericotech.clavin.gazetteer.BasicGeoName;
-import com.bericotech.clavin.gazetteer.GeoName;
+import com.bericotech.clavin.resolver.OutputEntry;
 import com.bericotech.clavin.resolver.ResolvedLocation;
 import com.bericotech.clavin.util.TextUtils;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
 
 public class ParseFile {
 
@@ -37,37 +40,27 @@ public class ParseFile {
         List<ResolvedLocation> resolvedLocations = parser.parse(inputString, latitude, longitude);
 
         // Display the ResolvedLocations found for the location names
-        System.out.println( "[" );
-        List<String> chunks = new ArrayList<String>();
+        List<OutputEntry> results = new ArrayList<>();
 
-        for (ResolvedLocation resolvedLocation : resolvedLocations) {
-            StringBuilder sb = new StringBuilder();
-            GeoName gn = resolvedLocation.getGeoname();
-            sb
-                    .append("{ ")
-                    .append("\"name\": \"")
-                    .append(gn.getName())
-                    .append( "\", " )
-                    .append("\"description\": \"")
-                    .append(gn.toString())
-                    .append( "\", " )
-                    .append("\"type\": \"")
-                    .append(gn.getFeatureClass())
-                    .append( "\", " )
-                    .append("\"subtype\": \"")
-                    .append(gn.getFeatureCode())
-                    .append( "\", " )
-                    .append("\"latitude\": ")
-                    .append(gn.getLatitude())
-                    .append( ", " )
-                    .append("\"longitude\": ")
-                    .append(gn.getLongitude())
-                    .append(" }");
-            chunks.add(sb.toString());
+        for( ResolvedLocation resolvedLocation : resolvedLocations ) {
+            OutputEntry oe = OutputEntry.fromGeoName(resolvedLocation.getGeoname());
+            oe.score = resolvedLocation.getConfidence();
+            results.add(oe);
         }
 
-        System.out.println( String.join(",\n",chunks));
+        HashMap<Integer,OutputEntry> map = new HashMap<>();
+        for( OutputEntry oe : results ) {
+            if( ! map.containsKey( oe.id ) ) {
+                map.put(oe.id, oe);
+            }
+        }
 
-        System.out.println("]");
+        List<OutputEntry> sortedResults = new ArrayList<>( map.values() );
+
+        Collections.sort(sortedResults,OutputEntry.ScoreComparitor);
+
+        Gson gson = new GsonBuilder().setPrettyPrinting().create();
+        String output = gson.toJson( sortedResults );
+        System.out.println( output );
     }
 }

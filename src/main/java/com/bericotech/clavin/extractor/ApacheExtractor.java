@@ -1,16 +1,19 @@
 package com.bericotech.clavin.extractor;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-
 import opennlp.tools.namefind.NameFinderME;
 import opennlp.tools.namefind.TokenNameFinderModel;
+import opennlp.tools.postag.POSDictionary;
+import opennlp.tools.postag.POSModel;
+import opennlp.tools.postag.POSTaggerME;
 import opennlp.tools.sentdetect.SentenceDetectorME;
 import opennlp.tools.sentdetect.SentenceModel;
 import opennlp.tools.tokenize.TokenizerME;
 import opennlp.tools.tokenize.TokenizerModel;
 import opennlp.tools.util.Span;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /*#####################################################################
  * 
@@ -55,11 +58,20 @@ public class ApacheExtractor implements LocationExtractor {
 
     // used to split the input into sentences before finding names
     private SentenceDetectorME sentenceDetector;
-    
+
+    // experimental - try to grab noun phrases for locations
+    private POSTaggerME posTagger;
+
+    // experimental - determine what options a token has for POS,
+    //  perhaps to prefer proper nouns as locations
+    private POSDictionary posDictionary;
+
     // resource files used by Apache OpenNLP Name Finder
     private static final String pathToNERModel = "/en-ner-location.bin";
     private static final String pathToTokenizerModel = "/en-token.bin";
     private static final String pathToSentenceDetectorModel = "/en-sent.bin";
+    private static final String pathToPOSDetectorModel = "/en-pos-maxent.bin";
+    private static final String pathToPOSDictionary = "/en-tagdict.xml";
 
     
     /**
@@ -72,6 +84,8 @@ public class ApacheExtractor implements LocationExtractor {
         nameFinder = new NameFinderME(new TokenNameFinderModel(ApacheExtractor.class.getResourceAsStream(pathToNERModel)));
         tokenizer = new TokenizerME(new TokenizerModel(ApacheExtractor.class.getResourceAsStream(pathToTokenizerModel)));
         sentenceDetector = new SentenceDetectorME(new SentenceModel(ApacheExtractor.class.getResourceAsStream(pathToSentenceDetectorModel)));
+        posTagger = new POSTaggerME(new POSModel(ApacheExtractor.class.getResourceAsStream(pathToPOSDetectorModel)));
+        posDictionary = POSDictionary.create(ApacheExtractor.class.getResourceAsStream(pathToPOSDictionary));
     }
     
     /**
@@ -104,35 +118,69 @@ public class ApacheExtractor implements LocationExtractor {
             //the values used in these Spans are string character offsets of each token from the sentence beginning
             Span[] tokenPositionsWithinSentence = tokenizer.tokenizePos(sentence);
 
-            // find the location names in the tokenized text
-            // the values used in these Spans are NOT string character offsets, they are indices into the 'tokens' array
-            Span names[] = nameFinder.find(tokens);
+            // First use the name finder to get locations
+            {
+                // find the location names in the tokenized text
+                // the values used in these Spans are NOT string character offsets, they are indices into the 'tokens' array
+                Span names[] = nameFinder.find(tokens);
 
 
-            //for each name that got found, create our corresponding occurrence
-            for (Span name : names) {
+                //for each name that got found, create our corresponding occurrence
+                for (Span name : names) {
 
-                //find offsets relative to the start of the sentence
-                int beginningOfFirstWord = tokenPositionsWithinSentence[name.getStart()].getStart();
-                // -1 because the high end of a Span is noninclusive
-                int endOfLastWord = tokenPositionsWithinSentence[name.getEnd() - 1].getEnd();
+                    //find offsets relative to the start of the sentence
+                    int beginningOfFirstWord = tokenPositionsWithinSentence[name.getStart()].getStart();
+                    // -1 because the high end of a Span is noninclusive
+                    int endOfLastWord = tokenPositionsWithinSentence[name.getEnd() - 1].getEnd();
 
-                //to get offsets relative to the document as a whole, just add the offset for the sentence itself
-                int startOffsetInDoc = sentenceSpan.getStart() + beginningOfFirstWord;
-                int endOffsetInDoc = sentenceSpan.getStart() + endOfLastWord;
+                    //to get offsets relative to the document as a whole, just add the offset for the sentence itself
+                    int startOffsetInDoc = sentenceSpan.getStart() + beginningOfFirstWord;
+                    int endOffsetInDoc = sentenceSpan.getStart() + endOfLastWord;
 
-                //look back into the original input string to figure out what the text is that I got a hit on
-                String nameInDocument = plainText.substring(startOffsetInDoc, endOffsetInDoc);
+                    //look back into the original input string to figure out what the text is that I got a hit on
+                    String nameInDocument = plainText.substring(startOffsetInDoc, endOffsetInDoc);
 
-                // add to List of results to return
-                nerResults.add(new LocationOccurrence(nameInDocument, startOffsetInDoc));
+                    // add to List of results to return
+                    nerResults.add(new LocationOccurrence(nameInDocument, startOffsetInDoc));
+                }
+
+                // this is necessary to maintain consistent results across
+                // multiple runs on the same data, which is what we want
+                nameFinder.clearAdaptiveData();
             }
 
-        }
+            // Then look for tokens that are proper nouns (NNP) according to the dictionary
+            {
+                // tag the text with parts of speech
+                String tags[] = posTagger.tag(tokens);
 
-        // this is necessary to maintain consistent results across
-        // multiple runs on the same data, which is what we want
-        nameFinder.clearAdaptiveData();
+                Span[] spans = tokenizer.tokenizePos(sentence);
+
+                for( int i=0; i<tokens.length; i++ ) {
+                    if( tags[i].equalsIgnoreCase("NNP") ) {
+                        String[] allTagsForWord = posDictionary.getTags(tokens[i]);
+                        if( allTagsForWord != null && allTagsForWord.length == 1 ) {
+                            // This word is only a proper noun, so add it to the candidate list.
+
+                            //find offsets relative to the start of the sentence
+                            int beginningOfFirstWord = tokenPositionsWithinSentence[i].getStart();
+                            // -1 because the high end of a Span is noninclusive
+                            int endOfLastWord = tokenPositionsWithinSentence[i].getEnd();
+
+                            //to get offsets relative to the document as a whole, just add the offset for the sentence itself
+                            int startOffsetInDoc = sentenceSpan.getStart() + beginningOfFirstWord;
+                            int endOffsetInDoc = sentenceSpan.getStart() + endOfLastWord;
+
+                            //look back into the original input string to figure out what the text is that I got a hit on
+                            String nameInDocument = plainText.substring(startOffsetInDoc, endOffsetInDoc);
+
+                            // add to List of results to return
+                            nerResults.add(new LocationOccurrence(nameInDocument, startOffsetInDoc));
+                        }
+                    }
+                }
+            }
+        }
 
         return nerResults;
     }
